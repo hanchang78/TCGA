@@ -1,0 +1,294 @@
+---
+title: "TCGA sample 1"
+output: html_notebook
+---
+
+#Install packages for TCGA analysis
+
+```{r}
+
+BiocManager::install("limma")
+BiocManager::install("edgeR")
+BiocManager::install("glmnet")
+BiocManager::install("factoextra")
+BiocManager::install("FactoMinR")
+BiocManager::install("caret")
+BiocManager::install("gplots")
+BiocManager::install("survival")
+BiocManager::install("survminer")
+BiocManager::install("RColorBrewer")
+BiocManager::install("gProfileR")
+BiocManager::install("genefilter")
+BiocManager::install("SummarizedExperiment", force = TRUE)
+
+BiocManager::valid("summarizedExperiment")
+
+
+```
+
+#Load library
+
+```{r}
+# Load packages
+library("TCGAbiolinks")
+library("limma")
+library("edgeR")
+library("glmnet")
+library("factoextra")
+library("FactoMineR")
+library("caret")
+library("SummarizedExperiment")
+library("gplots")
+library("survival")
+library("survminer")
+library("RColorBrewer")
+library("gProfileR")
+library("genefilter")
+
+
+```
+
+#TCGA_LUAD data import
+
+```{r}
+TCGAbiolinks:::getProjectSummary("TCGA-LUAD")
+
+query_TCGA <- GDCquery(project = "TCGA-LUAD", data.category = "Transcriptome Profiling", experimental.strategy = "RNA-Seq", workflow.type = "HTSeq - Counts", sample.type = c("Primary Tumor", "Solid Tissue Normal"))
+
+GDCdownload(query_TCGA)
+
+tcga_data <- GDCprepare(query_TCGA)
+
+saveRDS(object = tcga_data,
+        file = "tcga_data.RDS",
+        compress = FALSE)
+
+tcga_data <- readRDS(file = "tcga_data.RDS")
+```
+
+Summary of tcga_data
+
+```{r}
+
+summary(tcga_data)
+dim(tcga_data) # 56602 genes in 592 samples
+
+colnames(colData(tcga_data))
+table(tcga_data@colData$paper_Tumor.stage) #tumor stage 
+table(tcga_data@colData$paper_Survival) #survival status
+table(tcga_data@colData$paper_Oncogene.Negative.or.Positive.Groups) #155 positive oncogenes and 90 negative oncogenes
+table(tcga_data@colData$paper_T.stage) #size of tumor
+table(tcga_data@colData$paper_Nonsilent.Mutations)
+table(tcga_data@colData$paper_Survival)
+
+
+```
+
+```
+
+
+#---------RNASeq Normalization--------
+
+
+```{r}
+limma_pipeline = function(
+  tcga_data,
+  condition_variable,
+  reference_group=NULL){
+  
+  design_factor = colData(tcga_data)[, condition_variable, drop=T]
+  
+  group = factor(design_factor)
+  if(!is.null(reference_group)){group = relevel(group, ref=reference_group)}
+  
+  design = model.matrix(~ group)
+  
+  dge = DGEList(counts=assay(tcga_data),
+                samples=colData(tcga_data),
+                genes=as.data.frame(rowData(tcga_data)))
+  
+  # filtering
+  keep = filterByExpr(dge,design)
+  dge = dge[keep,,keep.lib.sizes=FALSE]
+  rm(keep)
+  
+  # Normalization (TMM followed by voom)
+  dge = calcNormFactors(dge)
+  v = voom(dge, design, plot=TRUE)
+  
+  # Fit model to data given design
+  fit = lmFit(v, design)
+  fit = eBayes(fit)
+  
+  # Show top genes
+  topGenes = topTable(fit, coef=ncol(design), number=100, sort.by="p")
+  
+  return(
+    list(
+      voomObj=v, # normalized data
+      fit=fit, # fitted model and statistics
+      topGenes=topGenes # the 100 most differentially expressed genes
+    )
+  )
+}
+
+
+
+limma_res = limma_pipeline(
+  tcga_data=tcga_data,
+  condition_variable="definition",
+  reference_group="Solid Tissue Normal"
+)
+
+saveRDS(object = limma_res,
+        file = "limma_res.RDS",
+        compress = FALSE)
+        
+limma_res = readRDS(file = "limma_res.RDS")
+
+limma_res
+```
+
+
+```{r}
+plot_PCA = function(voomObj, condition_variable){
+  group = factor(voomObj$targets[, condition_variable])
+  pca = prcomp(t(voomObj$E))
+  # Take PC1 and PC2 for the plot
+  plot(pca$x[,1:2],col=group, pch=19)
+  # include a legend for points
+  legend("bottomleft", inset=.01, levels(group), pch=19, col=1:length(levels(group)))
+  return(pca)
+}
+
+res_pca = plot_PCA(limma_res$voomObj, "definition")
+res_pca
+
+```
+
+```{r}
+res_coef = coef(res, s="lambda.min") # the "coef" function returns a sparse matrix
+dim(res_coef)
+
+head(res_coef) # in a sparse matrix the "." represents the value of zero
+
+# get coefficients with non-zero values
+res_coef = res_coef[res_coef[,1] != 0,]
+# note how performing this operation changed the type of the variable
+head(res_coef)
+
+# remove first coefficient as this is the intercept, a variable of the model itself
+res_coef = res_coef[-1]
+
+relevant_genes = names(res_coef) # get names of the (non-zero) variables.
+length(relevant_genes) # number of selected genes
+
+head(relevant_genes) # few select genes
+head(limma_res$voomObj$genes)
+relevant_gene_names = limma_res$voomObj$genes[relevant_genes,"external_gene_name"]
+
+head(relevant_gene_names) # few select genes (with readable names now)
+
+#check the common genes between limma and Elastic Net results
+print(intersect(limma_res$topGenes$ensembl_gene_id, relevant_genes))
+
+
+##draw hierarchical clusterin
+# define the color palette for the plot
+hmcol = colorRampPalette(rev(brewer.pal(9, "RdBu")))(256)
+
+# perform complete linkage clustering
+clust = function(x) hclust(x, method="complete")
+# use the inverse of correlation as distance.
+dist = function(x) as.dist((1-cor(t(x)))/2)
+
+# Show green color for genes that also show up in DE analysis
+colorLimmaGenes = ifelse(
+  # Given a vector of boolean values
+  (relevant_genes %in% limma_res$topGenes$ensembl_gene_id),
+  "green", # if true, return green for that value
+  "white" # if false, return white for that value
+)
+
+gene_heatmap = heatmap.2(
+  t(d_mat[,relevant_genes]),
+  scale="row",          # scale the values for each gene (row)
+  density.info="none",  # turns off density plot inside color legend
+  trace="none",         # turns off trace lines inside the heat map
+  col=hmcol,            # define the color map
+  labRow=relevant_gene_names, # use gene names instead of ensembl annotation
+  RowSideColors=colorLimmaGenes,
+  labCol=FALSE,         # Not showing column labels
+  ColSideColors=as.character(as.numeric(d_resp)), # Show colors for each response class
+  dendrogram="both",    # Show dendrograms for both axis
+  hclust = clust,       # Define hierarchical clustering method
+  distfun = dist,       # Using correlation coefficient for distance function
+  cexRow=.6,            # Resize row labels
+  margins=c(1,5)        # Define margin spaces
+)
+
+
+
+```
+
+#Top Gene expression for survival
+
+```{r}
+expr_df = limma_res$topGenes
+print(expr_df[, 2])
+# get the ensembl gene id of the first row
+gene_id = expr_df[, "ensembl_gene_id"]
+
+
+# also get the common gene name of the first row
+gene_name = expr_df[1, "external_gene_name"]
+```
+
+
+
+```{r}
+expr_diseased = d_mat[rownames(clin_df), gene_id]
+expr_healthy = d_mat[setdiff(rownames(d_mat), rownames(clin_df)), gene_id]
+
+boxplot(expr_diseased, expr_healthy,
+        names=c("Diseased", "Healthy"), main="Distribution of gene expression")        
+
+# get the expression values for the selected gene
+clin_df$gene_value = d_mat[rownames(clin_df), gene_id]
+
+
+# find the median value of the gene and print it
+median_value = median(clin_df$gene_value)
+print(median_value)
+
+# divide patients in two groups, up and down regulated.
+# if the patient expression is greater or equal to them median we put it
+# among the "up-regulated", otherwise among the "down-regulated"
+clin_df$gene = ifelse(clin_df$gene_value >= median_value, "UP", "DOWN")
+
+
+# create a new boolean variable that has TRUE for dead patients
+# and FALSE for live patients
+clin_df$deceased = clin_df$vital_status == "Dead"
+
+# create an "overall survival" variable that is equal to days_to_death
+# for dead patients, and to days_to_last_follow_up for patients who
+# are still alive
+clin_df$overall_survival = ifelse(clin_df$deceased,
+                                  clin_df$days_to_death,
+                                  clin_df$days_to_last_follow_up)
+
+# we can fit a survival model, like we did in the previous section
+fit = survfit(Surv(overall_survival, deceased) ~ gene, data=clin_df)
+
+# we can extract the survival p-value and print it
+pval = surv_pvalue(fit, data=clin_df)$pval
+print(pval)
+
+# and finally, we produce a Kaplan-Meier plot
+ggsurvplot(fit, data=clin_df, pval=T, risk.table=T, title=paste(gene_name))
+###those pval more than 0.05, the gene does not appear to make a differnce for prognosis
+```
+
+
+
