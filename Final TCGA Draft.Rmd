@@ -1,0 +1,288 @@
+---
+title: "TCGA database analysis to find prognostic genes for lung adenocarcinoma"
+output: html_notebook
+---
+
+Scientific Question: {10 points} Can the differentially expressed genes of lung adenocarcinoma tumors and normal lung tissues in the TCGA database indicate potential prognostic markers for the survival of lung adenocarcinoma patients?
+
+The Cancer Genome Atlas Program (TCGA) was initiated by NCI and National Human Genome Research Institute in 2006, which has characterized over 20,000 primary cancer and 33 cancer types with 2.5 petabytes of genomic, epigenomic, transcriptomic, and proteomic data. This database has been widely used for a myriad of researchers for cancer research, which has revealed the transcriptional landscape and mutation frequencies for different cancer types and identified important gene expression for cancer progression [1]. 
+
+The clinical relevance of gene expression for survival of lung adenocarcinoma patients can be also indicated through analysis of Kaplan-Meier plotting; for example, downregulation of IFN-y expression indicated the poor prognosis of lung adenocarcinoma patients by Kaplan-Meier survival plots [2]. As a result, the statistical analysis of TCGA database may reveal the prognostic markers for lung adenocarcinoma. Aligning with the trends of analyzing TCGA, many researchers have used the statistical tools to identify and evaluate the prognostic markers for lung adenocarcinoma, first by analyzing differential gene expression and then Kaplan-Meier survival plots with genome-wide approach [3, 4, 5]. Therefore, the analysis of differential gene expression between adenocarcinoma tumor and normal lung tissue may indicate the possible prognostic gene markers which can be validated by Kaplan-Meier survival plotting. These prognostic-related genes may also be the potential therapeutic targets to treat lung adenocarcinoma. 
+
+Scientific Hypothesis: { 10 points } If the differentially expressed genes between lung adenocarcinoma tumors and normal lung tissues have p-values less than 0.05 for the survival of lung adenocarcinoma patients, then these genes may have clinical significance and be used as prognostic markers for lung adenocarcinoma patients.
+
+We will perform differential gene expression to find the differential expressed genes between lung adenocarcinoma tumors in lung adenocarcinoma patients and normal lung tissues in healthy people from the TCGA-LUAD project database. Principal component analysis (PCA) will be used to visualize the differential gene expression in two different conditions. The top 100 differentially expressed genes will be identified. Box plot will be used to visualize the different gene expression in lung adenocarcinoma patients and healthy people. Survival plots by Kaplan-Meier estimate will estimate the statistical significance and visualize the effect of the gene expression on survival of lung adenocarcinoma patients. 
+
+
+Below are the coding to install the necessary packages for analysis of TCGA, differential gene expression, and survival plot. 
+
+#Install packages for TCGA database analysis
+
+***specific description of functions from each paackages is explained in the coding section
+
+```{r}
+
+BiocManager::install("TCGAbiolinks") #The package is required to query and download the TCGA database. 
+BiocManager::install("limma") #this package is used to generate RNA-seq differential gene expression. 
+BiocManager::install("edgeR") #Differential expression analysis of RNA-seq expression profiles
+BiocManager::install("factoextra") #visualize the output of multivariate data analyses, including 'PCA' (Principal Component Analysis),
+BiocManager::install("FactoMinR") #Exploratory data analysis methods to summarize, visualize and describe the data by principal component analysis (PCA). 
+BiocManager::install("gplots") #Various R programming tools for plotting data, used for box plotting specifically
+BiocManager::install("survival") #Used for the core survival analysis including definition of Surv objects and Kaplan-Meier analysis. 
+BiocManager::install("survminer") #this package is used to conduct the function 'ggsurvplot' to visualize the survival graph with the 'number at risk' table.
+BiocManager::install("RColorBrewer") #manage colors to plot graphs for survival analysis. This package gives different color palettes, thus allowing the visualization of patient survival with different gene expression. 
+BiocManager::install("SummarizedExperiment") #The SummarizedExperiment are used to represent the matrix-like objects and objects with more various assays. 
+
+
+```
+
+#Load library
+
+```{r}
+# Load packages
+library("TCGAbiolinks")
+library("limma")
+library("edgeR")
+library("factoextra")
+library("FactoMineR")
+library("gplots")
+library("survival")
+library("survminer")
+library("RColorBrewer")
+library("SummarizedExperiment")
+
+```
+
+#TCGA-LUAD data query, download, and save RDS. 
+
+#Use the link https://portal.gdc.cancer.gov/projects to find the information about the project. This project focuses on lung adenocarcinoma. You can find the specific information about data category and experimental strategy of TCGA-LUAD in GDC website (https://portal.gdc.cancer.gov/projects/TCGA-LUAD). 
+
+```{r}
+
+#TCGAbiolinks package is used for this script portion
+
+TCGAbiolinks:::getProjectSummary("TCGA-LUAD") #Summary of TCGA-LUAD project. getproject summary function: retrieve the information about lung adenocarcinoma in TCGA database. Triple colons to returns the value of the internal variable 'project summary' of the TCGAbiolinks package. 
+
+#Define the global variable query_TCGA of GDCQuery variable to filter and query the data from TCGA database
+
+query_TCGA <- GDCquery(project = "TCGA-LUAD", data.category = "Transcriptome Profiling", experimental.strategy = "RNA-Seq", workflow.type = "HTSeq - Counts", sample.type = c("Primary Tumor", "Solid Tissue Normal")) #This project uses TCGA-LUAD database and analyze the transcriptome profiling of lung adenocarcinoma patients conducted by High-throughput RNA sequencing counts. We will compare the the transcriptome profiles of primary tumor and solid tissue normal samples. TCGA-LUAD, Transcriptome Profiling, RNA-Seq, HTSeq - Counts, Primary Tumor, Solid Tissue Normal are local variables.
+
+#Download the file from TCGA database defined by GDCquery local variables 
+
+GDCdownload(query_TCGA) 
+
+#Define the global variable tcga_data by GDCprepare function defined by query_TCGA for the rest of the script 
+
+tcga_data <- GDCprepare(query_TCGA) #GDCprepare reads the downloaded data and prepare it to R object 
+
+#Save the global variable as a RDS file named "tcga_data.RDS" without compression. 
+
+saveRDS(object = tcga_data,
+        file = "tcga_data.RDS",
+        compress = FALSE) 
+
+#Load the RDS file and redefined the global variable. 
+tcga_data <- readRDS(file = "tcga_data.RDS")
+```
+
+#Summary of tcga_data. Use of both base and SummarizedExperiment packages to give the information about the dataset
+
+```{r}
+
+summary(tcga_data) #R base function give the summary information and class of the global variable tcga_data
+dim(tcga_data) #R base function to return the length of the row.names attribute x and of x, thus giving 56602 genes in 592 samples
+
+#Use of SummarizedExperiment package to see the detailed information of the data. This will be used for limma function below
+
+colData(tcga_data) #return the columns of the dataframe (tcga_data) with each row providing information of the samples in the corresponding column. 
+colnames(colData(tcga_data)) #returns the column names in the dataframe (85 columns in our data)
+rowData(tcga_data) #return the rows of the dataframe (tcga_data) for gene information 
+table(tcga_data@colData$paper_Survival) #gives the table of summarized information of each column.
+table(tcga_data@colData$definition) #gives the table for the number of primary solid tumor and solid tissue normal. this column data will be used for differential gene expression
+
+```
+
+#Differential gene expression analysis by limma and EdgeR packages
+
+
+```{r}
+
+#We will define the pipeline, limma_pipeline, to conduct the differential gene expression by assigning the output of the function. The function has three variables: tcga_data=the data object(global variable) from TCGA database, condition_variable=internal conditional variable to group/filter the tcga_data, and reference_group=the group that will be compared with tcga_data to generate the differential gene expression, and the default is null. 
+
+limma_pipeline = function(
+  tcga_data, 
+  condition_variable,
+  reference_group=NULL){
+  
+  design_factor = colData(tcga_data)[, condition_variable, drop=T] #design_factor is the internal variable defined by column array of tcga_data and drop=TRUE deletes the array dimension with one level 
+
+  group = factor(design_factor) #group is the internal variable defined by base factor function to encode a vector of internal design_factor as a factor
+  if(!is.null(reference_group)){group = relevel(group, ref=reference_group)} #if the reference_group is null(no reference), is.null returns TRUE and conduct the function relevel(built-in R stats package) to reorder the internal variable, group, by reference_group and move down others.
+  
+  design = model.matrix(~ group) #define the internal variable, design, by model.matrix function(stats package) to create a matrix that is defined by the independent variable, group, by tilde operator.
+  
+  #Create a DGEList object from a table of counts (tcga_data: counts=rows for features, samples=columns, genes=data frame containing the gene annotation information
+  dge = DGEList(counts=assay(tcga_data), #define the internal variable, dge, by DGEList function (edgeR): counts are the numeric matrix, internal variable, of tcga_data read counts defined by assay(SummarizedExperiment Package to list rows for gene expression)
+                samples=colData(tcga_data), #samples are the internal variable defined by colData function (explained above) for sample information
+                genes=as.data.frame(rowData(tcga_data))) #genes are the internal variable defined by base as.data.frame function for gene information
+  
+  # filtering
+  keep = filterByExpr(dge,design) #define keep, internal variable, by filterByExpr edgeR function with internal variable dge and design, to filter genes by expression level
+  dge = dge[keep,,keep.lib.sizes=FALSE] #internal dge is now filtered by the filtering criteria in the keep variable and lib.sizes that has low counts or zero will be removed 
+  rm(keep) #remove keep internal variable
+  
+  # Normalization (TMM,between-sample normalization method, followed by voom)
+  dge = calcNormFactors(dge) #internal dge variable is now normalized from raw library sizes to normalized library size by calNormFactors edgeR function
+  v = voom(dge, design, plot=TRUE) #internal variable v is defined by voom, limma package, which transforms the count data (dge) to log2-counts per million for appropriate observation level by design variables (design matrix with rows corresponding to samples). local argument plot is true to display the mean-variance
+  
+  # Fit model to data given design
+  fit = lmFit(v, design) #define fit local variable by lmfit limma function for linear model of series of arrays by local variables v and design
+  fit = eBayes(fit) #fit is redefined by eBayes limma function for empirical Bayes Statistics for differential expression given a linear model from lmfit above
+  
+  # Show top genes
+  topGenes = topTable(fit, coef=ncol(design), number=100, sort.by="p") #topGenes is the local variable defined by topTable limma function to generate the table of Top Genes from linear model fit defined by fit local variable, and column numbers are defined by design variable. 100 genes will be listed in the table and sorted by p values.
+  #Now the function is defined by the local variables defined above and arguments for the function are listed as follows 
+  return(
+    list(
+      voomObj=v, # local variable voomObj is normalized expression values on the log2 scale calculated by v variable
+      fit=fit, # fitted model and statistics
+      topGenes=topGenes # the 100 most differentially expressed genes
+    )
+  )
+}
+
+#Time to use the defined new function. limma_res is the global variable defined by limma_pipeline function. The gene expression from tcga_data will be normalized by the voomObj argument, and samples from primary solid tumor and solid tissue normal (column data definition from tcga_data) will be statistically analyzed by Bayes Statistics for differential gene expression, and Solid Tissue Normal samples will be used as reference group to generate the differential gene expression
+limma_res = limma_pipeline(
+  tcga_data=tcga_data,
+  condition_variable="definition",
+  reference_group="Solid Tissue Normal"
+)
+#Save the limma_res global variable as limma_res.RDS file without compression
+saveRDS(object = limma_res,
+        file = "limma_res.RDS",
+        compress = FALSE)
+
+#Load the RDS file        
+limma_res = readRDS(file = "limma_res.RDS")
+
+limma_res
+```
+
+#Principal Components Analysis (PCA) Plot to visualize the differential gene expression by primary solid tumor and solid normal tissue groups. 
+
+```{r}
+
+#Make new function, plot_PCA, to plot PCA. Packages factoextra and FactoMineR are used to plot PCA with the built-in stats and stats4 packages. 
+
+plot_PCA = function(voomObj, condition_variable){ #Use of previously made local variables, voomObj and condition_variable (argument objects) to define the functions
+  group = factor(voomObj$targets[, condition_variable]) #local variable group is defined by factor base function to encode the vector (t) as a factor of targets inside voomObj local variable specifically defined by condition_variable local variable. Ultimately, this will group the samples into primary solid tumor and solid normal tissue groups.
+  pca = prcomp(t(voomObj$E)) #prcomp is the built-in stats package to perform PCA on data matrix of local variable voomObj with just accessing one variable, E values (voom log-cpm values), in a dataset. 
+  # Take PC1 and PC2 for the plot
+  plot(pca$x[,1:2],col=group, pch=19) #plot function. pch option is used to specify the point symbols and col option to color the groups. The graph will be plotted defined by prcomp local variable (argument) with two groups
+  # include a legend for points with specific options 
+  legend("bottomleft", inset=.01, levels(group), pch=19, col=1:length(levels(group)))    
+  return(pca) #defined local variables above are now returned
+}
+
+#res_pca is the global variable defined by the new function, plot_PCA, defined above and normalized diffenrentially expressed genes in limma_res will be plotted by two groups.
+res_pca = plot_PCA(limma_res$voomObj, "definition")
+#The plot will generate the separated RNA expression profile with two sample groups
+res_pca
+
+```
+# Top 100 differentially expressed genes will be evaluated by Kaplan-Meier survival analysis. 
+
+Only statistically significant genes will be visualized with box plot to show the differential gene expression of primary solid tumor vs solid tissue normal (diseased vs healthy) and visualized with survival plots to show the significance in survivality. 
+
+gplots, survival, survminer, RColorBrewer packages are used for this coding section. 
+
+```{r}
+
+#define the global variable, expr_df, as the top 100 differentially expressed genes of the local variable topGenes from limma_res global variable
+
+expr_df = limma_res$topGenes
+
+# Transpose and make the differential gene expression values (E values, voom log-cpm) into a matrix object. 
+diff_matrix = as.matrix(t(limma_res$voomObj$E)) #Define the global variable, diff_matrix, by as.matrix base function
+
+# Extract the clinical data for each patients from tcga_data. 
+clinical = tcga_data@colData #Define the global variable, clinical, from column data of tcga_data
+
+dim(clinical) #Retreive the dimension of global variable clinical. 592 samples/patients with 85 columns
+
+# Filter for the data for primary solid tumors from definition column to analyze the survival of LUAD patients 
+clin_df = clinical[clinical$definition == "Primary solid Tumor", #filter for primary solid tumor
+                   c("patient", #patient number
+                     "vital_status", #whether the patient is alive or dead
+                     "days_to_death", #the number of days passed from initial diagnosis to the death
+                     "days_to_last_follow_up")] #the number of days to last follow up
+
+#Define global variable, clin_df$deceased by filtering dead for vital status in clin_df global variable.
+
+clin_df$deceased = clin_df$vital_status == "Dead"
+
+#Define global variable, clin_df$overall_survival. Use base ifelse function to return values (number of days to deaths) for true element of test, dead, and return values (patients still alive) for false element of test. 
+
+clin_df$overall_survival = ifelse(clin_df$deceased,
+                                  clin_df$days_to_death,
+                                  clin_df$days_to_last_follow_up)
+
+
+#Now time to conduct the Kaplan-Meier plots to analyze whether top expressed genes are statistically significant for survival of LUAD patients. 
+
+
+for(i in 1:100) { # Use of for function to analyze all 100 genes
+  gene_id = expr_df[i, "ensembl_gene_id"] #gene_id is the global variable defined by expr_df global variable with all 100 genes with ensembl_gene_id from expr_df
+  gene_name = expr_df[i, "external_gene_name"] #gene_name is the global variable defined by expr_df global variable with all 100 genes with external_gene_name from expr_df
+  
+  expr_diseased = diff_matrix[rownames(clin_df), gene_id] #expr_diseased is the global variable defined by diff_matrix filtered for patient groups with primary solid tumor
+  expr_healthy = diff_matrix[setdiff(rownames(diff_matrix), rownames(clin_df)), gene_id] #expr_diseased is the global variable defined by diff_matrix filtered for healthy groups with solid tissue normal. setdiff base function is used to differentiate the healthy group. 
+
+  clin_df$gene_value = diff_matrix[rownames(clin_df), gene_id] # clin_df$gene_value, global variable, is defined by filtering diff_matrix for differential gene expression values. 
+
+  median_value = median(clin_df$gene_value) #function median from built-in stats defines the global variable median_value to separate two groups.
+
+  clin_df$gene = ifelse(clin_df$gene_value >= median_value, "UP", "DOWN") #define clin_df#gene global variable by base ifelse function to return the values higher than median value as UP and return values lower than median as DOWN. 
+
+  fit = survfit(Surv(overall_survival, deceased) ~ gene, data=clin_df) #use of survfit and Surv from survival package to compute the estimate of a survival curve by Kaplan-Meier method to define the global variable fit. 
+
+  pval = surv_pvalue(fit, data=clin_df)$pval #use of surv_pavlue from survminer package to compute p-value comparing survival curves as defined by fit global variable, and p value is extracted and defined as global variable pval. 
+
+  if(pval < 0.05) { #use of if function to only print the genes significant for survival of patients
+    print (gene_name)
+    boxplot(expr_diseased, expr_healthy, names=c("Diseased", "Healthy"), main=paste(gene_name)) #boxplot from gplot package to illustrate the significant differential gene expression for diseased vs healthy (tumor vs normal). gene_name will be pasted as the title.
+    print(ggsurvplot(fit, data=clin_df, pval=T, risk.table=T, title=paste(gene_name))) #use of ggsurvplot function from survminer package to plot survival curves as defined by fit global variable. colors are determined as default and p value, risk table, and title are printed as defined by the options. 
+    
+  }
+}    
+```
+
+
+Analysis of Results {25 points for correctly analyzing the data}: Among the 56602 expressed genes in TCGA lung adenocarcinoma database, the top 100 differentially expressed genes in lung adenocarcinoma were identified by comparing with normal lung tisuse from healthy people. The PCA plot clearly showed that the gene expression profiles for the differentially expressed genes were separated by two groups. This indicates that certain genes are consistently downregulated in lung adenocarcinoma. These top 100 differentially expressed genes were analyzed for the signficance in the survival of lung adenocarcinoma patients, and 18 genes are statistically relevant (p<0.05) with the survival of lung adenocarcinoma patients by Kaplan-Meier analysis. 
+
+The genes were then evaluated with comparison of peer-reviewed papers. Four genes (TCF21, ADAMTS8, CA4, BTNL9) were already known to be tumor suppresive genes [4, 6, 7, 8]. The downregulation of tumor suppresive genes would lead to cancer progression, thus worsening the prognosis of lung adenocarcinoma patients. The role of other genes were unknown or controversial in different cancer types so further research is required.  
+
+Seven genes (AC135012.3, AL606469.1, GPIHBP1, RS1, NCKAP5, FREM3, and PTPRQ) have not been investigated for the role in tumor development. Based on the functions of other genes, these 7 downregulated genes in lung adenocarcinoma patients may represent the novel tumor suppressor genes that could be potentially used as prognostic markers or therapeutic targets in lung adenocarcinoma patients. In sum, the analysis of TCGA lung adenocarcinoma database through differential gene expression between solid lung tumor and normal lung tissues and Kaplan-Meier survival analysis did suggest the potential prognostic-related genes, but further research is required to validate their uses in predicting the prognosis of lung cancer patients. 
+
+
+
+Bibliography:
+
+[1] Kandoth, C., McLellan, M., Vandin, F. et al. Mutational landscape and significance across 12 major cancer types. Nature 502, 333–339 (2013). https://doi.org/10.1038/nature12634
+
+[2] Wang, Q., Sun, L., Yang, X. et al.Activation of liver X receptor inhibits the development of pulmonary carcinomas induced by 3-methylcholanthrene and butylated hydroxytoluene in BALB/c mice. (Links to an external site.)Sci Rep 6, 27295 (2016). https://doi.org/10.1038/srep27295
+
+[3] Chen, D., Song, Y., Zhang, F., Wang, X., Zhu, E., Zhang, X., Jiang, G., Li, S., Chen, C., & Chen, Y. (2019). Genome-Wide Analysis of Lung Adenocarcinoma Identifies Novel Prognostic Factors and a Prognostic Score (Links to an external site.). Frontiers in genetics, 10, 493. https://doi.org/10.3389/fgene.2019.00493
+
+[4] Xu, Y., Xu, W. H., Shi, S. N., Yang, X. L., Ren, Y. R., Zhuang, X. Y., Qu, Y. Y., Zhang, H. L., & Zhang, X. F. (2020). Carbonic Anhydrase 4 serves as a Clinicopathological Biomarker for Outcomes and Immune Infiltration in Renal Cell Carcinoma, Lower Grade Glioma, Lung Adenocarcinoma and Uveal Melanoma. (Links to an external site.) Journal of Cancer, 11(20), 6101–6113. https://doi.org/10.7150/jca.46902 (Links to an external site.)
+
+[5] Al-Dherasi, A., Huang, Q. T., Liao, Y., Al-Mosaib, S., Hua, R., Wang, Y., Yu, Y., Zhang, Y., Zhang, X., Huang, C., Mousa, H., Ge, D., Sufiyan, S., Bai, W., Liu, R., Shao, Y., Li, Y., Zhang, J., Shi, L., Lv, D., … Liu, Q. (2021).A seven-gene prognostic signature predicts overall survival of patients with lung adenocarcinoma (LUAD) (Links to an external site.). Cancer cell international, 21(1), 294. https://doi.org/10.1186/s12935-021-01975-z
+
+[6] Ao, X., Ding, W., Zhang, Y. et al. TCF21: a critical transcription factor in health and cancer. J Mol Med 98, 1055–1068 (2020). https://doi.org/10.1007/s00109-020-01934-7
+
+[7] Erdoğan, Murat MD, Findikli, Hüseyin Avni MD, Okuducu Teran, İrem MD. A novel biomarker for predicting sepsis mortality, Medicine: February 12, 2021 - Volume 100 - Issue 6 - p e24671 doi: 10.1097/MD.0000000000024671
+
+[8] Mo, Q., Xu, K., Luo, C., Zhang, Q., Wang, L., Ren, G. (2021). BTNL9 is frequently downregulated and inhibits proliferation and metastasis via the P53/CDC25C and P53/GADD45 pathways in breast cancer. Biochemical and Biophysical Research Communications, Volume 553, Pages 17-24, https://doi.org/10.1016/j.bbrc.2021.03.022.
+
+
+
